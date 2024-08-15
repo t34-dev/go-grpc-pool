@@ -1,0 +1,17 @@
+// exampleservice.proto
+syntax = "proto3";
+
+package exampleservice;
+
+option go_package = "github.com/t34-dev/go-grpc-pool/example/api/exampleservice";
+
+service ExampleService {
+	rpc GetLen(TxtRequest) returns (TxtResponse) {}
+}
+
+message TxtRequest {
+	string text = 1;
+}
+message TxtResponse {
+	uint32 number = 1;
+}
