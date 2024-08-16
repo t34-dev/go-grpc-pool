@@ -11,8 +11,8 @@ tag-new:
 	@echo $(GIT_NEW_TAG)
 
 tag-up:
-	@if [ "$(CURRENT_BRANCH)" != "dev" ]; then \
-		echo "Error: You can only create new tags from the 'dev' branch."; \
+	@if [ "$(CURRENT_BRANCH)" != "main" ]; then \
+		echo "Error: You can only create new tags from the 'main' branch."; \
 		echo "Current branch: $(CURRENT_BRANCH)"; \
 		exit 1; \
 	fi
