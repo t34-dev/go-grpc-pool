@@ -156,7 +156,7 @@ func TestPoolIdleTimeout(t *testing.T) {
 	}
 
 	// Set a short idleTimeout for testing purposes
-	idleTimeout := 3 * time.Second
+	idleTimeout := 5 * time.Second
 	pool, err := NewPool(factory, PoolOptions{
 		MinConn:     2,
 		MaxConn:     3,
