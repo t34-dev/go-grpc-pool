@@ -156,55 +156,73 @@ func NewPool(factory connectionFactory, options PoolOptions) (*Pool, error) {
 
 // Get retrieves an available connection from the pool or creates a new one if possible
 func (p *Pool) Get() (*Connection, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	startTime := time.Now()
 
-	for {
-		// Sort connections by last used timestamp (from newest to oldest)
-		sort.Slice(p.connections, func(i, j int) bool {
-			return p.connections[i].lastUsedTimestamp.After(p.connections[j].lastUsedTimestamp)
-		})
+	// Channel to signal availability of connection
+	availableConn := make(chan *Connection, 1)
+	timeout := make(chan struct{}, 1)
 
-		for _, conn := range p.connections {
-			if !conn.isUse {
-				conn.isUse = true
-				conn.lastUsedTimestamp = time.Now()
-				if p.logger != nil {
-					p.logger.Debug("Reusing existing connection")
+	go func() {
+		for {
+			p.mu.Lock()
+
+			// Sort connections by last used timestamp (from newest to oldest)
+			sort.Slice(p.connections, func(i, j int) bool {
+				return p.connections[i].lastUsedTimestamp.After(p.connections[j].lastUsedTimestamp)
+			})
+
+			for _, conn := range p.connections {
+				if !conn.isUse {
+					conn.isUse = true
+					conn.lastUsedTimestamp = time.Now()
+					p.mu.Unlock()
+					availableConn <- conn
+					return
 				}
-				return conn, nil
 			}
-		}
 
-		if len(p.connections) < p.options.MaxConn {
-			newConn, err := p.createConnection()
-			if err != nil {
-				if p.logger != nil {
-					p.logger.Error("Failed to create new connection:", err)
+			// If we can't create a new connection, we have to wait
+			if len(p.connections) < p.options.MaxConn {
+				newConn, err := p.createConnection()
+				if err != nil {
+					if p.logger != nil {
+						p.logger.Error("Failed to create new connection:", err)
+					}
+					p.mu.Unlock()
+					availableConn <- nil
+					return
 				}
-				return nil, err
+				p.connections = append(p.connections, newConn)
+				p.mu.Unlock()
+				availableConn <- newConn
+				return
 			}
-			p.connections = append(p.connections, newConn)
-			if p.logger != nil {
-				p.logger.Debug("Created new connection")
-			}
-			return newConn, nil
-		}
 
-		// If we've waited for maxWaitTime, return an error
-		if time.Since(startTime) >= p.options.WaitGetConn {
-			if p.logger != nil {
-				p.logger.Error("Timeout waiting for available connection")
-			}
-			return nil, ErrNoAvailableConn
-		}
+			// Unlock the mutex and let the main routine handle the wait
+			p.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
 
-		// Unlock the mutex and wait for a short time before trying again
-		p.mu.Unlock()
-		time.Sleep(100 * time.Millisecond)
-		p.mu.Lock()
+			if time.Since(startTime) >= p.options.WaitGetConn {
+				timeout <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	select {
+	case conn := <-availableConn:
+		if conn == nil {
+			return nil, ErrConnection
+		}
+		if p.logger != nil {
+			p.logger.Debug("Reusing existing or created connection")
+		}
+		return conn, nil
+	case <-timeout:
+		if p.logger != nil {
+			p.logger.Error("Timeout waiting for available connection")
+		}
+		return nil, ErrNoAvailableConn
 	}
 }
 
