@@ -234,3 +234,42 @@ func TestPoolConcurrentRequests(t *testing.T) {
 
 	t.Logf("Final pool available connections: %d", pool.GetStats().CurrentConnections)
 }
+
+// TestPoolGetTimeout tests the timeout behavior when no connections are available
+func TestPoolGetTimeout(t *testing.T) {
+	_, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// Factory for creating gRPC connections
+	factory := func() (*grpc.ClientConn, error) {
+		return grpc.Dial("localhost"+Address,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+			grpc.WithTimeout(5*time.Second))
+	}
+
+	// Create connection pool with a short timeout
+	pool, err := NewPool(factory, PoolOptions{
+		MinConn:     1,
+		MaxConn:     1,
+		IdleTimeout: 5 * time.Minute,
+		WaitGetConn: 2 * time.Second,  // Set a short wait time for testing timeout
+	})
+	if err != nil {
+		t.Fatalf("Failed to create pool: %v", err)
+	}
+	defer pool.Close()
+
+	// Get the first connection, which should succeed
+	conn, err := pool.Get()
+	if err != nil {
+		t.Fatalf("Failed to get initial Connection: %v", err)
+	}
+	defer conn.Free()
+
+	// Try to get another connection, which should timeout
+	_, err = pool.Get()
+	if err != ErrNoAvailableConn {
+		t.Errorf("Expected ErrNoAvailableConn, got: %v", err)
+	}
+}
