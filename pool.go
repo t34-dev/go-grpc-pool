@@ -1,21 +1,30 @@
 package grpcpool
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"google.golang.org/grpc"
+)
+
+const (
+	waitGetDefault     = 2 * time.Second
+	idleTimeoutDefault = time.Minute
 )
 
 // Error variables for common error scenarios
 var (
-	ErrClosed        = errors.New("grpc connector: client pool is closed")
-	ErrTimeout       = errors.New("grpc connector: client pool timeout exceeded")
-	ErrAlreadyClosed = errors.New("grpc connector: connection was already closed")
-	ErrFullPool      = errors.New("grpc connector: attempt to close ClientConn in a full pool")
+	ErrOptionMinOrMax  = errors.New("invalid MinConn or MaxConn")
+	ErrConnection      = errors.New("Connection is not ready")
+	ErrClosed          = errors.New("client pool is closed")
+	ErrNoAvailableConn = errors.New("no available connections")
+	ErrTimeout         = errors.New("client pool timeout exceeded")
+	ErrAlreadyClosed   = errors.New("Connection was already closed")
+	ErrFullPool        = errors.New("attempt to destroy ClientConn in a full pool")
 )
 
 // Logger - interface for logger
@@ -24,289 +33,321 @@ type Logger interface {
 	Error(msg ...interface{})
 }
 
-// Factory - a function type that creates a new gRPC client connection
-type Factory func(ctx context.Context) (*grpc.ClientConn, error)
+// Connection represents a single gRPC connection in the pool
+type Connection struct {
+	conn              *grpc.ClientConn
+	isWork            bool
+	isUse             bool
+	lastUsedTimestamp time.Time
+	pool              *Pool
+}
+
+// Free marks the connection as not in use and updates the last used timestamp
+func (c *Connection) Free() {
+	c.pool.mu.Lock()
+	defer c.pool.mu.Unlock()
+
+	c.isUse = false
+	c.lastUsedTimestamp = time.Now()
+	if c.pool.logger != nil {
+		c.pool.logger.Debug("Connection freed")
+	}
+}
+
+// IsReady checks if the connection is ready for use
+func (c *Connection) IsReady() bool {
+	if c.conn == nil {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c.isWork = false
+			if c.pool.logger != nil {
+				c.pool.logger.Error("Panic in IsReady:", r)
+			}
+		}
+	}()
+	state := c.conn.GetState()
+	return state == connectivity.Ready || state == connectivity.Idle
+}
+
+// GetConn returns the underlying gRPC client connection
+func (c *Connection) GetConn() *grpc.ClientConn {
+	return c.conn
+}
+
+// destroy closes the connection if it's not already shut down
+func (c *Connection) destroy() error {
+	if c.conn.GetState() != connectivity.Shutdown {
+		if c.pool.logger != nil {
+			c.pool.logger.Debug("Destroying connection")
+		}
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// connectionFactory is a function type for creating new gRPC client connections
+type connectionFactory func() (*grpc.ClientConn, error)
+
+// poolStats represents statistics about the connection pool
+type poolStats struct {
+	MinConnections     int
+	MaxConnections     int
+	CurrentConnections int
+	WorkConnections    int
+}
+
+// PoolOptions contains configuration options for the connection pool
+type PoolOptions struct {
+	MinConn     int
+	MaxConn     int
+	WaitGetConn time.Duration
+	IdleTimeout time.Duration
+	Logger      Logger
+}
 
 // Pool represents a pool of gRPC client connections
 type Pool struct {
-	factory         Factory
-	clients         chan *ClientConn
-	idleTimeout     time.Duration
-	maxLifeDuration time.Duration
-	capacity        int
-	initialClients  int
-	logger          Logger
-	mu              sync.RWMutex
-	cleanupTicker   *time.Ticker
-	done            chan struct{}
-	availableCount  int32
-	totalCount      int32
+	mu            sync.RWMutex
+	connections   []*Connection
+	factory       connectionFactory
+	logger        Logger
+	cleanupTicker *time.Ticker
+	options       PoolOptions
 }
 
-// ClientConn wraps gRPC ClientConn with additional metadata
-type ClientConn struct {
-	*grpc.ClientConn
-	pool          *Pool
-	timeUsed      time.Time
-	timeInitiated time.Time
-	unhealthy     bool
-}
-
-// Close returns the connection to the pool or closes it if it's unhealthy or expired
-func (cc *ClientConn) Close() error {
-	if cc.ClientConn == nil {
-		return ErrAlreadyClosed
+// NewPool creates a new connection pool with the given factory and options
+func NewPool(factory connectionFactory, options PoolOptions) (*Pool, error) {
+	if options.MinConn < 0 || options.MaxConn < options.MinConn {
+		return nil, ErrOptionMinOrMax
 	}
-
-	cc.pool.mu.RLock()
-	defer cc.pool.mu.RUnlock()
-
-	if cc.pool.clients == nil {
-		return ErrClosed
+	newOptions := options
+	if newOptions.MinConn <= 0 {
+		newOptions.MinConn = 1
 	}
-
-	if cc.unhealthy || cc.pool.isExpired(cc) {
-		cc.ClientConn.Close()
-		cc.ClientConn = nil
-		atomic.AddInt32(&cc.pool.totalCount, -1)
-		cc.pool.logf("Closed unhealthy or expired connection. Available: %d, Total: %d", cc.pool.availableCount, cc.pool.totalCount)
-		return nil
+	if newOptions.MaxConn <= 0 {
+		newOptions.MaxConn = 1
 	}
-
-	select {
-	case cc.pool.clients <- cc:
-		cc.timeUsed = time.Now()
-		atomic.AddInt32(&cc.pool.availableCount, 1)
-		cc.pool.logf("Returned connection to pool. Available: %d, Total: %d", cc.pool.availableCount, cc.pool.totalCount)
-		return nil
-	default:
-		cc.ClientConn.Close()
-		atomic.AddInt32(&cc.pool.totalCount, -1)
-		cc.pool.logf("Closed excess connection. Available: %d, Total: %d", cc.pool.availableCount, cc.pool.totalCount)
-		return ErrFullPool
+	if newOptions.WaitGetConn <= 0 {
+		newOptions.WaitGetConn = waitGetDefault
 	}
-}
-
-// Unhealthy marks the connection as unhealthy
-func (cc *ClientConn) Unhealthy() {
-	cc.unhealthy = true
-}
-
-// NewPool creates a new connection pool with specified parameters
-func NewPool(factory Factory, initialClients, capacity int, idleTimeout, maxLifeDuration time.Duration, logger Logger) (*Pool, error) {
-	if capacity <= 0 {
-		capacity = 1
-	}
-	if initialClients < 0 {
-		initialClients = 0
-	}
-	if initialClients > capacity {
-		initialClients = capacity
+	if newOptions.IdleTimeout <= 0 {
+		newOptions.IdleTimeout = idleTimeoutDefault
 	}
 
 	p := &Pool{
-		factory:         factory,
-		clients:         make(chan *ClientConn, capacity),
-		idleTimeout:     idleTimeout,
-		maxLifeDuration: maxLifeDuration,
-		capacity:        capacity,
-		initialClients:  initialClients,
-		logger:          logger,
-		cleanupTicker:   time.NewTicker(idleTimeout / 2),
-		done:            make(chan struct{}),
+		factory:     factory,
+		connections: make([]*Connection, 0, newOptions.MaxConn),
+		options:     newOptions,
+		logger:      newOptions.Logger,
 	}
 
-	for i := 0; i < initialClients; i++ {
-		if err := p.createConn(); err != nil {
-			p.Close()
-			return nil, err
-		}
+	if p.logger != nil {
+		p.logger.Debug("Creating new connection pool")
 	}
 
-	go p.cleanupLoop()
+	p.Init()
+	p.cleanupTicker = time.NewTicker(time.Second)
+	go p.cleanup()
 
 	return p, nil
 }
 
-func (p *Pool) createConn() error {
-	cc, err := p.factory(context.Background())
-	if err != nil {
-		return err
-	}
-	p.clients <- &ClientConn{
-		ClientConn:    cc,
-		pool:          p,
-		timeUsed:      time.Now(),
-		timeInitiated: time.Now(),
-	}
-	atomic.AddInt32(&p.availableCount, 1)
-	atomic.AddInt32(&p.totalCount, 1)
-	p.logf("Created new connection. Available: %d, Total: %d", p.availableCount, p.totalCount)
-	return nil
-}
-
-// Get retrieves a connection from the pool or creates a new one if necessary
-func (p *Pool) Get(ctx context.Context) (*ClientConn, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if p.clients == nil {
-		return nil, ErrClosed
-	}
-
-	for {
-		select {
-		case cc := <-p.clients:
-			if cc == nil {
-				return nil, ErrClosed
-			}
-			if cc.ClientConn == nil || p.isExpired(cc) {
-				p.logf("Connection expired or nil. Recreating...")
-				cc.ClientConn.Close()
-				newCC, err := p.factory(ctx)
-				if err != nil {
-					atomic.AddInt32(&p.availableCount, -1)
-					atomic.AddInt32(&p.totalCount, -1)
-					p.logf("Failed to recreate connection. Available: %d, Total: %d", p.availableCount, p.totalCount)
-					return nil, err
-				}
-				cc.ClientConn = newCC
-				cc.timeInitiated = time.Now()
-			}
-			cc.timeUsed = time.Now()
-			atomic.AddInt32(&p.availableCount, -1)
-			p.logf("Got connection from pool. Available: %d, Total: %d", p.availableCount, p.totalCount)
-			return cc, nil
-		default:
-			if atomic.LoadInt32(&p.totalCount) < int32(p.capacity) {
-				p.logf("Creating new connection as pool is not at capacity")
-				if err := p.createConn(); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			p.logf("Waiting for available connection")
-			select {
-			case cc := <-p.clients:
-				if cc == nil {
-					return nil, ErrClosed
-				}
-				if cc.ClientConn == nil || p.isExpired(cc) {
-					newCC, err := p.factory(ctx)
-					if err != nil {
-						atomic.AddInt32(&p.availableCount, -1)
-						return nil, err
-					}
-					cc.ClientConn = newCC
-					cc.timeInitiated = time.Now()
-				}
-				cc.timeUsed = time.Now()
-				atomic.AddInt32(&p.availableCount, -1)
-				return cc, nil
-			case <-ctx.Done():
-				return nil, ErrTimeout
-			}
-		}
-	}
-}
-
-// isExpired checks if the connection has exceeded its idle time or maximum lifetime
-func (p *Pool) isExpired(cc *ClientConn) bool {
-	if p.idleTimeout > 0 && cc.timeUsed.Add(p.idleTimeout).Before(time.Now()) {
-		return true
-	}
-	if p.maxLifeDuration > 0 && cc.timeInitiated.Add(p.maxLifeDuration).Before(time.Now()) {
-		return true
-	}
-	return false
-}
-
-// Close closes all connections in the pool and prevents further use
-func (p *Pool) Close() {
-	p.mu.Lock()
-	if p.clients == nil {
-		p.mu.Unlock()
-		return
-	}
-	clients := p.clients
-	p.clients = nil
-	p.mu.Unlock()
-
-	close(p.done)
-	p.cleanupTicker.Stop()
-
-	close(clients)
-	for cc := range clients {
-		if cc.ClientConn != nil {
-			cc.ClientConn.Close()
-		}
-	}
-}
-
-// IsClosed checks if the pool has been closed
-func (p *Pool) IsClosed() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.clients == nil
-}
-
-// Capacity returns the maximum number of connections the pool can hold
-func (p *Pool) Capacity() int {
-	return p.capacity
-}
-
-// AvailableConn returns the number of connections currently available in the pool
-func (p *Pool) AvailableConn() int {
-	return len(p.clients)
-}
-
-// cleanupLoop starts periodic cleanup of unused connections
-func (p *Pool) cleanupLoop() {
-	for {
-		select {
-		case <-p.cleanupTicker.C:
-			p.cleanupIdleConnections()
-		case <-p.done:
-			return
-		}
-	}
-}
-
-// cleanupIdleConnections closes unused connections
-func (p *Pool) cleanupIdleConnections() {
+// Get retrieves an available connection from the pool or creates a new one if possible
+func (p *Pool) Get() (*Connection, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.clients == nil {
-		return
-	}
+	startTime := time.Now()
 
-	var activeConns []*ClientConn
 	for {
-		select {
-		case cc := <-p.clients:
-			if cc == nil {
+		// Sort connections by last used timestamp (from newest to oldest)
+		sort.Slice(p.connections, func(i, j int) bool {
+			return p.connections[i].lastUsedTimestamp.After(p.connections[j].lastUsedTimestamp)
+		})
+
+		for _, conn := range p.connections {
+			if !conn.isUse {
+				conn.isUse = true
+				conn.lastUsedTimestamp = time.Now()
+				if p.logger != nil {
+					p.logger.Debug("Reusing existing connection")
+				}
+				return conn, nil
+			}
+		}
+
+		if len(p.connections) < p.options.MaxConn {
+			newConn, err := p.createConnection()
+			if err != nil {
+				if p.logger != nil {
+					p.logger.Error("Failed to create new connection:", err)
+				}
+				return nil, err
+			}
+			p.connections = append(p.connections, newConn)
+			if p.logger != nil {
+				p.logger.Debug("Created new connection")
+			}
+			return newConn, nil
+		}
+
+		// If we've waited for maxWaitTime, return an error
+		if time.Since(startTime) >= p.options.WaitGetConn {
+			if p.logger != nil {
+				p.logger.Error("Timeout waiting for available connection")
+			}
+			return nil, ErrNoAvailableConn
+		}
+
+		// Unlock the mutex and wait for a short time before trying again
+		p.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+		p.mu.Lock()
+	}
+}
+
+// GetStats returns the current statistics of the connection pool
+func (p *Pool) GetStats() poolStats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	workConnections := 0
+	for _, conn := range p.connections {
+		if conn.isWork {
+			workConnections += 1
+		}
+	}
+	stats := poolStats{
+		MinConnections:     p.options.MinConn,
+		MaxConnections:     p.options.MaxConn,
+		CurrentConnections: len(p.connections),
+		WorkConnections:    workConnections,
+	}
+	if p.logger != nil {
+		p.logger.Debug(fmt.Sprintf("Pool stats: %+v", stats))
+	}
+	return stats
+}
+
+// createConnection creates a new connection using the factory
+func (p *Pool) createConnection() (*Connection, error) {
+	cc, err := p.factory()
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Error("Failed to create connection:", err)
+		}
+		return nil, err
+	}
+	conn := &Connection{conn: cc, pool: p, isWork: true, lastUsedTimestamp: time.Now()}
+	if !conn.IsReady() {
+		if p.logger != nil {
+			p.logger.Error("New connection is not ready")
+		}
+		return nil, ErrConnection
+	}
+	if p.logger != nil {
+		p.logger.Debug("Created new connection")
+	}
+	return conn, nil
+}
+
+// Init initializes the pool with the minimum number of connections
+func (p *Pool) Init() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.connections) < p.options.MinConn {
+		for i := 0; i < p.options.MinConn; i++ {
+			newConn, err := p.createConnection()
+			if err != nil {
+				if p.logger != nil {
+					p.logger.Error("Failed to initialize connection:", err)
+				}
 				return
 			}
-			if p.isExpired(cc) && atomic.LoadInt32(&p.totalCount) > int32(p.initialClients) {
-				cc.ClientConn.Close()
-				atomic.AddInt32(&p.availableCount, -1)
-				atomic.AddInt32(&p.totalCount, -1)
-				p.logf("Cleaned up idle connection. Available: %d, Total: %d", p.availableCount, p.totalCount)
-			} else {
-				activeConns = append(activeConns, cc)
-			}
-		default:
-			for _, cc := range activeConns {
-				p.clients <- cc
-			}
-			return
+			p.connections = append(p.connections, newConn)
+		}
+		if p.logger != nil {
+			p.logger.Debug(fmt.Sprintf("Initialized pool with %d connections", p.options.MinConn))
 		}
 	}
 }
 
-func (p *Pool) logf(format string, args ...interface{}) {
+// cleanup periodically removes idle connections and ensures the minimum number of connections
+func (p *Pool) cleanup() {
+	for range p.cleanupTicker.C {
+		p.mu.Lock()
+		now := time.Now()
+		activeCount := 0
+		var expiredConns []*Connection
+
+		// First pass: count active connections and collect expired ones
+		for _, conn := range p.connections {
+			if !conn.isUse && now.Sub(conn.lastUsedTimestamp) > p.options.IdleTimeout {
+				expiredConns = append(expiredConns, conn)
+			} else {
+				activeCount++
+			}
+		}
+
+		// Second pass: remove or refresh connections
+		for _, conn := range expiredConns {
+			if activeCount < p.options.MinConn {
+				// Refresh the connection instead of removing it
+				if conn.IsReady() {
+					conn.lastUsedTimestamp = now
+					activeCount++
+					if p.logger != nil {
+						p.logger.Debug("Refreshed idle connection")
+					}
+				} else {
+					// If the connection is not ready, try to recreate it
+					newConn, err := p.createConnection()
+					if err == nil {
+						*conn = *newConn
+						activeCount++
+						if p.logger != nil {
+							p.logger.Debug("Recreated expired connection")
+						}
+					} else if p.logger != nil {
+						p.logger.Error("Failed to recreate expired connection:", err)
+					}
+				}
+			} else {
+				// Remove the connection
+				for i, c := range p.connections {
+					if c == conn {
+						p.connections = append(p.connections[:i], p.connections[i+1:]...)
+						conn.destroy()
+						if p.logger != nil {
+							p.logger.Debug("Removed expired connection")
+						}
+						break
+					}
+				}
+			}
+		}
+
+		p.mu.Unlock()
+
+		if p.logger != nil {
+			p.logger.Debug(fmt.Sprintf("Cleanup complete, active connections: %d", len(p.connections)))
+		}
+	}
+}
+
+// Close shuts down the pool and all its connections
+func (p *Pool) Close() {
+	p.cleanupTicker.Stop()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, conn := range p.connections {
+		conn.destroy()
+	}
+	p.connections = nil
 	if p.logger != nil {
-		p.logger.Debug(fmt.Sprintf(format, args...))
+		p.logger.Debug("Connection pool closed")
 	}
 }

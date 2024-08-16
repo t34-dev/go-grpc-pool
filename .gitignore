@@ -1,8 +1,8 @@
 .next
 .idea
+.temp
 .bin
 .env
-.secrets
 /dist
 /docs
 /gen
@@ -16,6 +16,3 @@ debug.log
 
 node_modules/
 /.gradle/
-
-.devops/.temp/
-/configs/use.yaml

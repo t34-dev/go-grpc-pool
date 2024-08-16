@@ -1,3 +1,4 @@
+DEV_DIR := $(CURDIR)
 APP_REPOSITORY := github.com/t34-dev
 APP_NAME := go-grpc-pool
 export GOPRIVATE=$(APP_REPOSITORY)/*
@@ -6,6 +7,7 @@ export GOPRIVATE=$(APP_REPOSITORY)/*
 include .make/get-started.mk
 include .make/tag.mk
 include .make/protoc.mk
+include .make/test.mk
 
 
 protoc:

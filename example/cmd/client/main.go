@@ -1,3 +1,5 @@
+// main.go
+
 package main
 
 import (
@@ -6,82 +8,136 @@ import (
 	grpcpool "github.com/t34-dev/go-grpc-pool"
 	constants "github.com/t34-dev/go-grpc-pool/example"
 	"github.com/t34-dev/go-grpc-pool/example/api/exampleservice"
-	"log"
-	"time"
-
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"log"
+	"sync"
+	"time"
 )
 
-func main() {
-	zapLogger, err := zap.NewDevelopment()
-	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
-	}
-	defer zapLogger.Sync()
-
-	grpcPool, err := grpcpool.NewPool(
-		func(ctx context.Context) (*grpc.ClientConn, error) {
-			return grpc.DialContext(ctx, "localhost"+constants.Address,
-				grpc.WithTransportCredentials(insecure.NewCredentials()),
-				grpc.WithBlock(),
-				grpc.WithTimeout(5*time.Second))
-		},
-		3, 10, 10*time.Second, 20*time.Second, nil, // grpcpool.Logger(zapLogger.Sugar()),
-	)
-	if err != nil {
-		zapLogger.Fatal("Failed to create connection pool", zap.Error(err))
-	}
-	defer grpcPool.Close()
-
-	// Проверяем начальное соединение
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, err := grpcPool.Get(ctx)
-	if err != nil {
-		zapLogger.Fatal("Failed to get initial connection", zap.Error(err))
-	}
-	conn.Close() // Возвращаем соединение в пул
-
-	testStrings := []string{
+// Global variables
+var (
+	zapLogger   *zap.Logger
+	testStrings = []string{
 		"Hello, World!",
 		"gRPC is awesome",
-		"Периодический клиент",
+		"Periodic client",
 		"Test string",
 		"Another test",
 	}
+)
 
-	ticker := time.NewTicker(1 * time.Second)
+// printStats prints the current statistics of the connection pool
+func printStats(msg string, pool *grpcpool.Pool) {
+	stats := pool.GetStats()
+	fmt.Printf("%s: Pool stats: Min=%d, Max=%d, Current=%d, WorkConn=%d\n",
+		msg, stats.MinConnections, stats.MaxConnections, stats.CurrentConnections, stats.WorkConnections)
+}
+
+func main() {
+	// Initialize zap logger
+	zapLog, err := zap.NewDevelopment()
+	if err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	zapLogger = zapLog
+	defer zapLog.Sync()
+
+	// Define the factory function for creating gRPC connections
+	factory := func() (*grpc.ClientConn, error) {
+		return grpc.Dial("localhost"+constants.Address,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+			grpc.WithTimeout(5*time.Second))
+	}
+
+	idleTimeout := 3 * time.Second
+
+	// Create a new gRPC connection pool
+	grpcPool, err := grpcpool.NewPool(factory, grpcpool.PoolOptions{
+		MinConn:     2,
+		MaxConn:     40,
+		IdleTimeout: idleTimeout,
+		WaitGetConn: 3 * time.Second,
+		//Logger:      grpcpool.Logger(zapLogger.Sugar()),
+	})
+	if err != nil {
+		log.Fatalf("Failed to create grpcPool: %v", err)
+	}
+	defer grpcPool.Close()
+
+	printStats("Init", grpcPool)
+
+	// Run high or low test
+	highLoad(grpcPool)
+	//lowLoad(grpcPool)
+
+	fmt.Println("Waiting for idle connections to close...")
+	time.Sleep(idleTimeout + time.Second)
+	printStats("End", grpcPool)
+}
+
+// highLoad simulates a high load scenario using multiple goroutines
+func highLoad(pool *grpcpool.Pool) {
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 1; j++ {
+				// Get a connection from the pool
+				conn, err := pool.Get()
+				if err != nil {
+					printStats(fmt.Sprintf("Goroutine [%d]: Failed Get: %v", i, err), pool)
+					continue
+				}
+
+				// Use the connection to call the gRPC service
+				testString := testStrings[i%len(testStrings)]
+				client := exampleservice.NewExampleServiceClient(conn.GetConn())
+				response, err := client.GetLen(context.Background(), &exampleservice.TxtRequest{Text: testString})
+				if err != nil {
+					printStats(fmt.Sprintf("Goroutine [%d]: Failed calling GetLen: %v", i, err), pool)
+					continue
+				}
+
+				printStats(fmt.Sprintf("Goroutine [%d]: %s, Result: %d", i, testString, response.GetNumber()), pool)
+				conn.Free() // Return the connection to the pool
+			}
+		}(i)
+	}
+	wg.Wait()
+	printStats("Wait", pool)
+}
+
+// lowLoad simulates a low load scenario using a ticker
+func lowLoad(pool *grpcpool.Pool) {
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	for i := 0; ; i++ {
-		<-ticker.C
+	for i := 0; i < 50; i++ {
+		<-ticker.C // Wait for the ticker
+		for j := 0; j < 1; j++ {
+			// Get a connection from the pool
+			conn, err := pool.Get()
+			if err != nil {
+				printStats(fmt.Sprintf("Goroutine [%d]: Failed Get: %v", i, err), pool)
+				continue
+			}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		conn, err := grpcPool.Get(ctx)
-		if err != nil {
-			zapLogger.Error("Failed to get connection from pool", zap.Error(err))
-			cancel()
-			continue
+			// Use the connection to call the gRPC service
+			testString := testStrings[i%len(testStrings)]
+			client := exampleservice.NewExampleServiceClient(conn.GetConn())
+			response, err := client.GetLen(context.Background(), &exampleservice.TxtRequest{Text: testString})
+			if err != nil {
+				printStats(fmt.Sprintf("Goroutine [%d]: Failed calling GetLen: %v", i, err), pool)
+				continue
+			}
+
+			printStats(fmt.Sprintf("Goroutine [%d]: %s, Result: %d", i, testString, response.GetNumber()), pool)
+			conn.Free() // Return the connection to the pool
 		}
-
-		client := exampleservice.NewExampleServiceClient(conn)
-
-		testString := testStrings[i%len(testStrings)]
-
-		response, err := client.GetLen(ctx, &exampleservice.TxtRequest{Text: testString})
-		cancel()
-
-		if err != nil {
-			zapLogger.Error("Error calling GetLen", zap.Error(err), zap.String("testString", testString))
-			conn.Unhealthy() // Помечаем соединение как нездоровое
-			conn.Close()
-			continue
-		}
-
-		zapLogger.Info(fmt.Sprintf("String: %s, Result: %d, pool:%d/%d", testString, response.GetNumber(), grpcPool.AvailableConn(), grpcPool.Capacity()))
-
-		conn.Close() // Возвращаем соединение в пул
 	}
+	printStats("Wait", pool)
 }
