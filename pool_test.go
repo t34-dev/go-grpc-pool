@@ -270,6 +270,6 @@ func TestPoolGetTimeout(t *testing.T) {
 	// Try to get another connection, which should timeout
 	_, err = pool.Get()
 	if err != ErrNoAvailableConn {
-		t.Errorf("Expected ErrNoAvailableConn, goat: %v", err)
+		t.Errorf("Expected ErrNoAvailableConn, got: %v", err)
 	}
 }
