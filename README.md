@@ -1,8 +1,8 @@
 [![ISC License](http://img.shields.io/badge/license-ISC-blue.svg)](http://copyfree.org)
-[![Coverage Status](https://coveralls.io/repos/github/t34-dev/go-grpc-pool/badge.svg?branch=main&ver=1723826869)](https://coveralls.io/github/t34-dev/go-grpc-pool?branch=main&ver=1723826869)
-![Go Version](https://img.shields.io/badge/Go-1.22-blue?logo=go&ver=1723826869)
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/t34-dev/go-grpc-pool?ver=1723826869)
-![GitHub tag (latest by date)](https://img.shields.io/github/v/tag/t34-dev/go-grpc-pool?sort=semver&style=flat&logo=git&logoColor=white&label=Latest%20Version&color=blue&ver=1723826869)
+[![Coverage Status](https://coveralls.io/repos/github/t34-dev/go-grpc-pool/badge.svg?branch=main&ver=1724708164)](https://coveralls.io/github/t34-dev/go-grpc-pool?branch=main&ver=1724708164)
+![Go Version](https://img.shields.io/badge/Go-1.22-blue?logo=go&ver=1724708164)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/t34-dev/go-grpc-pool?ver=1724708164)
+![GitHub tag (latest by date)](https://img.shields.io/github/v/tag/t34-dev/go-grpc-pool?sort=semver&style=flat&logo=git&logoColor=white&label=Latest%20Version&color=blue&ver=1724708164)
 
 # gRPC Connection Pool
 
