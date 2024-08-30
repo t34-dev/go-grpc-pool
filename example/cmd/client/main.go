@@ -7,7 +7,7 @@ import (
 	"fmt"
 	grpcpool "github.com/t34-dev/go-grpc-pool"
 	constants "github.com/t34-dev/go-grpc-pool/example"
-	"github.com/t34-dev/go-grpc-pool/example/api/exampleservice"
+	"github.com/t34-dev/go-grpc-pool/example/pkg/api/example_v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -46,10 +46,16 @@ func main() {
 
 	// Define the factory function for creating gRPC connections
 	factory := func() (*grpc.ClientConn, error) {
-		return grpc.Dial("localhost"+constants.Address,
+		//opts := []grpc.DialOption{
+		//	grpc.WithTransportCredentials(insecure.NewCredentials()),
+		//}
+		//return grpc.NewClient("localhost"+constants.Address, opts...)
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		return grpc.DialContext(ctx, "localhost"+constants.Address,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-			grpc.WithTimeout(5*time.Second))
+			grpc.WithBlock())
 	}
 
 	idleTimeout := 3 * time.Second
@@ -66,6 +72,7 @@ func main() {
 		log.Fatalf("Failed to create grpcPool: %v", err)
 	}
 	defer grpcPool.Close()
+	time.Sleep(5 * time.Second)
 
 	printStats("Init", grpcPool)
 
@@ -95,8 +102,8 @@ func highLoad(pool *grpcpool.Pool) {
 
 				// Use the connection to call the gRPC service
 				testString := testStrings[i%len(testStrings)]
-				client := exampleservice.NewExampleServiceClient(conn.GetConn())
-				response, err := client.GetLen(context.Background(), &exampleservice.TxtRequest{Text: testString})
+				client := example_v1.NewExampleServiceClient(conn.GetConn())
+				response, err := client.GetLen(context.Background(), &example_v1.TxtRequest{Text: testString})
 				if err != nil {
 					printStats(fmt.Sprintf("Goroutine [%d]: Failed calling GetLen: %v", i, err), pool)
 					continue
@@ -128,8 +135,8 @@ func lowLoad(pool *grpcpool.Pool) {
 
 			// Use the connection to call the gRPC service
 			testString := testStrings[i%len(testStrings)]
-			client := exampleservice.NewExampleServiceClient(conn.GetConn())
-			response, err := client.GetLen(context.Background(), &exampleservice.TxtRequest{Text: testString})
+			client := example_v1.NewExampleServiceClient(conn.GetConn())
+			response, err := client.GetLen(context.Background(), &example_v1.TxtRequest{Text: testString})
 			if err != nil {
 				printStats(fmt.Sprintf("Goroutine [%d]: Failed calling GetLen: %v", i, err), pool)
 				continue

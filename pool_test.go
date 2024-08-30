@@ -3,7 +3,7 @@ package grpcpool
 import (
 	"context"
 	"github.com/t34-dev/go-grpc-pool/example"
-	"github.com/t34-dev/go-grpc-pool/example/api/exampleservice"
+	"github.com/t34-dev/go-grpc-pool/example/pkg/api/example_v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"sync"
@@ -37,10 +37,16 @@ func TestPoolIdleTimeout(t *testing.T) {
 
 	// Factory for creating gRPC connections
 	factory := func() (*grpc.ClientConn, error) {
-		return grpc.Dial("localhost"+Address,
+		//opts := []grpc.DialOption{
+		//	grpc.WithTransportCredentials(insecure.NewCredentials()),
+		//}
+		//return grpc.NewClient("localhost"+constants.Address, opts...)
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		return grpc.DialContext(ctx, "localhost"+Address,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-			grpc.WithTimeout(5*time.Second))
+			grpc.WithBlock())
 	}
 
 	// Set a short idleTimeout for testing purposes
@@ -76,8 +82,8 @@ func TestPoolIdleTimeout(t *testing.T) {
 		}
 		defer conn.Free()
 
-		client := exampleservice.NewExampleServiceClient(conn.GetConn())
-		_, err = client.GetLen(ctx, &exampleservice.TxtRequest{Text: "test"})
+		client := example_v1.NewExampleServiceClient(conn.GetConn())
+		_, err = client.GetLen(ctx, &example_v1.TxtRequest{Text: "test"})
 		if err != nil {
 			t.Errorf("Request %d: Failed to make gRPC call: %v", id, err)
 			return
@@ -171,8 +177,8 @@ func TestPoolConcurrentRequests(t *testing.T) {
 		}
 		t.Logf("Request %d: Got Connection", id)
 
-		client := exampleservice.NewExampleServiceClient(conn.GetConn())
-		_, err = client.GetLen(ctx, &exampleservice.TxtRequest{Text: "test"})
+		client := example_v1.NewExampleServiceClient(conn.GetConn())
+		_, err = client.GetLen(ctx, &example_v1.TxtRequest{Text: "test"})
 		if err != nil {
 			t.Errorf("Request %d: Failed to make gRPC call: %v", id, err)
 			return
@@ -253,7 +259,7 @@ func TestPoolGetTimeout(t *testing.T) {
 		MinConn:     1,
 		MaxConn:     1,
 		IdleTimeout: 5 * time.Minute,
-		WaitGetConn: 2 * time.Second,  // Set a short wait time for testing timeout
+		WaitGetConn: 2 * time.Second, // Set a short wait time for testing timeout
 	})
 	if err != nil {
 		t.Fatalf("Failed to create pool: %v", err)

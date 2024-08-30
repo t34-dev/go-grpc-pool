@@ -3,7 +3,7 @@ package example
 import (
 	"context"
 	"errors"
-	"github.com/t34-dev/go-grpc-pool/example/api/exampleservice"
+	"github.com/t34-dev/go-grpc-pool/example/pkg/api/example_v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 	"log"
@@ -11,7 +11,7 @@ import (
 )
 
 type Server struct {
-	exampleservice.UnimplementedExampleServiceServer
+	example_v1.UnimplementedExampleServiceServer
 	address string
 	server  *grpc.Server
 }
@@ -22,12 +22,12 @@ func NewServer(address string) *Server {
 	}
 }
 
-func (s *Server) GetLen(ctx context.Context, in *exampleservice.TxtRequest) (*exampleservice.TxtResponse, error) {
+func (s *Server) GetLen(ctx context.Context, in *example_v1.TxtRequest) (*example_v1.TxtResponse, error) {
 	if in == nil {
 		return nil, errors.New("GetLen: TxtRequest is empty")
 	}
 
-	return &exampleservice.TxtResponse{
+	return &example_v1.TxtResponse{
 		Number: uint32(len(in.GetText())),
 	}, nil
 }
@@ -39,7 +39,7 @@ func (s *Server) Start() error {
 	}
 
 	s.server = grpc.NewServer()
-	exampleservice.RegisterExampleServiceServer(s.server, s)
+	example_v1.RegisterExampleServiceServer(s.server, s)
 	reflection.Register(s.server)
 
 	log.Printf("Server is running on %s", s.address)

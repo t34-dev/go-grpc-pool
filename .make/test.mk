@@ -1,10 +1,10 @@
 test:
-	@mkdir -p $(DEV_DIR)/.temp
+	@mkdir -p $(DEVOPS_DIR)/.temp
 	@CGO_ENABLED=0 go test \
 	. \
-	-coverprofile=$(DEV_DIR)/.temp/coverage-report.out -covermode=count
-	@go tool cover -html=$(DEV_DIR)/.temp/coverage-report.out -o $(DEV_DIR)/.temp/coverage-report.html
-	@go tool cover -func=$(DEV_DIR)/.temp/coverage-report.out
+	-coverprofile=$(DEVOPS_DIR)/.temp/coverage-report.out -covermode=count
+	@go tool cover -html=$(DEVOPS_DIR)/.temp/coverage-report.out -o $(DEVOPS_DIR)/.temp/coverage-report.html
+	@go tool cover -func=$(DEVOPS_DIR)/.temp/coverage-report.out
 
 
 .PHONY: test

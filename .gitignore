@@ -17,3 +17,9 @@ debug.log
 node_modules/
 /.gradle/
 /coverage.out
+
+
+# proto
+/example/api/*
+!/example/api/*.*
+!/example/api/*_v1

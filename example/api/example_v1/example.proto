@@ -1,9 +1,8 @@
-// exampleservice.proto
 syntax = "proto3";
 
-package exampleservice;
+package example_v1;
 
-option go_package = "github.com/t34-dev/go-grpc-pool/example/api/exampleservice";
+option go_package = "github.com/t34-dev/go-grpc-pool/example/pkg/example_v1;example_v1";
 
 service ExampleService {
 	rpc GetLen(TxtRequest) returns (TxtResponse) {}
