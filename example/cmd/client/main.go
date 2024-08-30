@@ -46,10 +46,14 @@ func main() {
 
 	// Define the factory function for creating gRPC connections
 	factory := func() (*grpc.ClientConn, error) {
-		return grpc.Dial("localhost"+constants.Address,
+		opts := []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-			grpc.WithTimeout(5*time.Second))
+		}
+		return grpc.NewClient("localhost"+constants.Address, opts...)
+		//return grpc.Dial("localhost"+constants.Address,
+		//	grpc.WithTransportCredentials(insecure.NewCredentials()),
+		//	grpc.WithBlock(),
+		//	grpc.WithTimeout(5*time.Second))
 	}
 
 	idleTimeout := 3 * time.Second
@@ -66,12 +70,13 @@ func main() {
 		log.Fatalf("Failed to create grpcPool: %v", err)
 	}
 	defer grpcPool.Close()
+	time.Sleep(5 * time.Second)
 
 	printStats("Init", grpcPool)
 
 	// Run high or low test
-	highLoad(grpcPool)
-	//lowLoad(grpcPool)
+	//highLoad(grpcPool)
+	lowLoad(grpcPool)
 
 	fmt.Println("Waiting for idle connections to close...")
 	time.Sleep(idleTimeout + time.Second)
