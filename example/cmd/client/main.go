@@ -77,8 +77,8 @@ func main() {
 	printStats("Init", grpcPool)
 
 	// Run high or low test
-	highLoad(grpcPool)
-	//lowLoad(grpcPool)
+	//highLoad(grpcPool)
+	lowLoad(grpcPool)
 
 	fmt.Println("Waiting for idle connections to close...")
 	time.Sleep(idleTimeout + time.Second)
