@@ -10,16 +10,23 @@ permissions:
 
 jobs:
   update-readme:
+    if: "!contains(github.event.head_commit.message, '[automated] Update version')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
       - name: Get the version
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      # README
       - name: Update README.md badges
         run: |
           current_time=$(date +%s)
@@ -30,8 +37,14 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add README.md
-          git commit -m "Update version to ${{ steps.get_version.outputs.VERSION }}"
+          git commit -m "[automated] Update version to ${{ steps.get_version.outputs.VERSION }}"
 
       - name: Push changes
         run: |
           git push origin HEAD:${{ github.event.repository.default_branch }}
+
+      - name: Move tag
+        run: |
+          git push --delete origin ${{ github.ref }}
+          git tag -fa ${{ github.ref_name }} -m "[automated] Update version to ${{ steps.get_version.outputs.VERSION }}"
+          git push origin ${{ github.ref_name }}
