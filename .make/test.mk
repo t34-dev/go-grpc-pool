@@ -1,5 +1,5 @@
 test:
-	@mkdir -p $(TEMP_DIR)/.temp
+	@mkdir -p $(TEMP_DIR)
 	@CGO_ENABLED=0 go test \
 	. \
 	-coverprofile=$(TEMP_DIR)/coverage-report.out -covermode=count
