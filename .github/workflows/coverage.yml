@@ -23,6 +23,9 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: LS
+        run: ls -la
+
       - name: Send coverage
         env:
           COVERALLS_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
