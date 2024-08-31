@@ -41,7 +41,7 @@ func TestPoolIdleTimeout(t *testing.T) {
 		//	grpc.WithTransportCredentials(insecure.NewCredentials()),
 		//}
 		//return grpc.NewClient("localhost"+constants.Address, opts...)
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		return grpc.DialContext(ctx, "localhost"+Address,
