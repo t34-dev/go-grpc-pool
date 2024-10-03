@@ -19,11 +19,12 @@ const (
 // Error variables for common error scenarios
 var (
 	ErrOptionMinOrMax  = errors.New("invalid MinConn or MaxConn")
-	ErrConnection      = errors.New("Connection is not ready")
+	ErrConnection      = errors.New("connection error")
+	ErrInitFailed      = errors.New("failed to initialize connection")
 	ErrClosed          = errors.New("client pool is closed")
 	ErrNoAvailableConn = errors.New("no available connections")
 	ErrTimeout         = errors.New("client pool timeout exceeded")
-	ErrAlreadyClosed   = errors.New("Connection was already closed")
+	ErrAlreadyClosed   = errors.New("connection was already closed")
 	ErrFullPool        = errors.New("attempt to destroy ClientConn in a full pool")
 )
 
@@ -147,7 +148,10 @@ func NewPool(factory connectionFactory, options PoolOptions) (*Pool, error) {
 		p.logger.Debug("Creating new connection pool")
 	}
 
-	p.Init()
+	err := p.Init()
+	if err != nil {
+		return nil, err
+	}
 	p.cleanupTicker = time.NewTicker(time.Second)
 	go p.cleanup()
 
@@ -272,7 +276,7 @@ func (p *Pool) createConnection() (*Connection, error) {
 }
 
 // Init initializes the pool with the minimum number of connections
-func (p *Pool) Init() {
+func (p *Pool) Init() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.connections) < p.options.MinConn {
@@ -280,9 +284,9 @@ func (p *Pool) Init() {
 			newConn, err := p.createConnection()
 			if err != nil {
 				if p.logger != nil {
-					p.logger.Error("Failed to initialize connection:", err)
+					p.logger.Error(ErrInitFailed)
 				}
-				return
+				return ErrInitFailed
 			}
 			p.connections = append(p.connections, newConn)
 		}
@@ -290,6 +294,7 @@ func (p *Pool) Init() {
 			p.logger.Debug(fmt.Sprintf("Initialized pool with %d connections", p.options.MinConn))
 		}
 	}
+	return nil
 }
 
 // cleanup periodically removes idle connections and ensures the minimum number of connections
